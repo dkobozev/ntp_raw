@@ -9,17 +9,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <stddef.h>
-
-#include <time.h>
+#include <unistd.h>
 
 #include "protoheaders.h"
 #include "ntp.h"
+#include "ip.h"
+#include "checksum.h"
 
 #define NTP_VERSION 3
 #define NTP_BUFSIZE 48
@@ -31,27 +34,26 @@ int main(int argc, char *argv[])
 {
     struct hostent *h;
     struct sockaddr_in serveraddr, myaddr;
-    struct sockaddr *received_from;
+    struct in_addr local_ip;
     struct ip_header iphead;
     struct udp_header udphead;
     struct ntpdata ntp_message;
+    struct ntpdata response;
     int sockfd, sock_udp;
     int ip_len, udp_len, ntp_len, total_len;
     uint16_t ip_csum, udp_csum;
     uint16_t *udp_csum_ptr, *ip_csum_ptr;
-    char my_hostname[255];
     uint8_t *datagrambuf;
-    uint8_t ntp_response_buf[NTP_BUFSIZE];
-    int size_received;
     
     /* Check the commandline arguments */
-    if(argc != 2) {
-        fprintf(stderr, "Usage: %s URL\n", argv[0]);
+    if(argc < 3) {
+        fprintf(stderr, "Usage: %s interface ntp_server_url\n", argv[0]);
+        fprintf(stderr, "Example: %s eth0 pool.ntp.org\n", argv[0]);
         exit(1);
     }
     
     /* Convert hostname to IP address */
-    if((h = gethostbyname(argv[1])) == NULL) {
+    if((h = gethostbyname(argv[2])) == NULL) {
         herror("gethostbyname");
         exit(1);
     }
@@ -66,7 +68,7 @@ int main(int argc, char *argv[])
     serveraddr.sin_family = AF_INET;
     serveraddr.sin_port = htons(123);
     serveraddr.sin_addr = *((struct in_addr *) h->h_addr);
-    memset(serveraddr.sin_zero, '\0', sizeof(serveraddr.sin_zero));
+    memset(serveraddr.sin_zero, 0, sizeof(serveraddr.sin_zero));
     
     /* Create IP header.
      *
@@ -82,12 +84,7 @@ int main(int argc, char *argv[])
     total_len = ip_len + udp_len + ntp_len;
     
     /* Get this computer's IP address */
-    if((gethostname(my_hostname, sizeof(my_hostname))) == -1) {
-        perror("gethostname");
-        exit(1);
-    }
-    if((h = gethostbyname(my_hostname)) == NULL) {
-        herror("gethostbyname");
+    if (interface_ip(argv[1], &local_ip) < 0) {
         exit(1);
     }
     
@@ -100,7 +97,7 @@ int main(int argc, char *argv[])
     iphead.ttl = 0xFF;
     iphead.protocol = IPPROTO_UDP;
     iphead.checksum = 0;
-    iphead.src_addr = *((struct in_addr *) h->h_addr);
+    iphead.src_addr = local_ip;
     iphead.dest_addr = serveraddr.sin_addr;
     
     /* Create UDP header */
@@ -110,6 +107,7 @@ int main(int argc, char *argv[])
     udphead.checksum = 0;
     
     /* Create NTP message */
+    memset(&ntp_message, 0, sizeof(struct ntpdata));
     ntp_message.status |= (NTP_VERSION << 3); 
     ntp_message.status |= MODE_CLIENT;
     
@@ -120,14 +118,14 @@ int main(int argc, char *argv[])
     memcpy(datagrambuf + ip_len + udp_len, &ntp_message, ntp_len);
     
     /* Calculate and set UDP checksum. */
-    udp_csum = udpcsum(&udphead, &ntp_message, iphead.src_addr, \
+    udp_csum = udp_checksum(&udphead, &ntp_message, iphead.src_addr, \
             iphead.dest_addr, ntp_len);
     udp_csum_ptr = (uint16_t *) (datagrambuf + ip_len + \
             offsetof(struct udp_header, checksum));
     *udp_csum_ptr = udp_csum;
     
     /* Calculate and set IP checksum */
-    ip_csum = csum_calc((uint16_t *) datagrambuf, total_len);
+    ip_csum = checksum((uint16_t *) datagrambuf, total_len);
     ip_csum_ptr = (uint16_t *) (datagrambuf + offsetof(struct ip_header, \
             checksum));
     *ip_csum_ptr = ip_csum;
@@ -148,18 +146,18 @@ int main(int argc, char *argv[])
     myaddr.sin_family = AF_INET;
     myaddr.sin_port = htons(UDP_PORT);
     myaddr.sin_addr.s_addr = INADDR_ANY;
-    memset(myaddr.sin_zero, '\0', sizeof(myaddr.sin_zero));
+    memset(myaddr.sin_zero, 0, sizeof(myaddr.sin_zero));
     
     if (bind(sock_udp, (struct sockaddr *)&myaddr, sizeof(myaddr)) == -1) {
         perror("bind");
         exit(1);
     }
-    
-    recvfrom(sock_udp, ntp_response_buf, NTP_BUFSIZE, 0, received_from, \
-            &size_received);
+
+    recvfrom(sock_udp, &response, sizeof(struct ntpdata), 0, NULL,
+            NULL);
     
     /* Print time */
-    printntptime((struct ntpdata *) &ntp_response_buf, 'n');
+    printntptime(&response, 'n');
     
     close(sock_udp);
     
