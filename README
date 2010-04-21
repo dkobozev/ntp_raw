@@ -1,0 +1,18 @@
+# ntp_raw & print_ip
+
+## Description
+
+*   ntp_raw - send a query to an NTP server using raw sockets and print
+    the time returned by the server. Using raw sockets requires root
+    privileges.
+*   print_ip - print the IP address for an interface.
+
+## Build
+
+Run `make` in the directory that contains `*.c` and `*.h` files to build both
+programs. Run `make print_ip` and `make ntp_raw` to build print_ip and ntp_raw
+programs, respectively.
+
+## Contact me
+
+You can contact the author at <d.v.kobozev@gmail.com>
