@@ -13,16 +13,14 @@
 #include <netdb.h>
 #include <stddef.h>
 
-#include "protoheaders.h"
+#include "protocol.h"
 #include "checksum.h"
 
 /* Compute the Internet checksum for data of length `len` pointed to by
  * `addr`.
  *
- * Taken from R. Stevens' et al. "Unix Network Programming Vol. 1".
- * Had to modify it a bit though - that book assumes int is 2 bytes long :/
- * The succint name is not due to character economy, but a means to avoid
- * naming conflicts.
+ * Gleaned from R. Stevens' et al. "Unix Network Programming Vol. 1".
+ * Had to modify it a bit though - the book assumes int is 2 bytes long :/
  */
 uint16_t checksum(uint16_t *addr, int len)
 {

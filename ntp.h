@@ -1,22 +1,32 @@
 /*
- * ntp.h -- Network Time Protocol header file taken from W. Richard Stevens' et
- * al. Unix Network Programming Vol. 1
+ * ntp.h -- Network Time Protocol header file.
  *
+ * Structs gleaned from W. Richard Stevens' et al. Unix Network 
+ * Programming Vol. 1
+ *
+ * Author: Denis Kobozev <d.v.kobozev@gmail.com>
  */
 
-#define JAN_1970 2208988800UL   /* 1970 - 1900 in seconds */
+#ifndef _NTP_H
+#define _NTP_H
 
-struct l_fixedpt {              /* 64-bit fixed point */
+/* 1970 - 1900 in seconds */
+#define JAN_1970 2208988800UL
+
+/* 64-bit fixed point */
+struct l_fixedpt {
     uint32_t int_part;
     uint32_t fraction;
 };
 
-struct s_fixedpt {              /* 32-bit fixed point */
+/* 32-bit fixed point */
+struct s_fixedpt {
     uint16_t int_part;
     uint16_t fraction;
 };
 
-struct ntpdata {                /* NTP header */
+/* NTP header */
+struct ntpdata {
     u_char status;
     u_char stratum;
     u_char ppoll;
@@ -36,3 +46,5 @@ struct ntpdata {                /* NTP header */
 #define MODE_CLIENT 3
 #define MODE_SERVER 4
 #define MODE_BROADCAST 5
+
+#endif /* _NTP_H */

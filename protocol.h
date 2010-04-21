@@ -1,10 +1,15 @@
 /*
- * protoheaders.h - header file containing structs for IP and UDP protocol
+ * protocol.h - header file containing structs for IP and UDP protocol
  * headers.
  *
- * Author: Denis Kobozev
+ * Author: Denis Kobozev <d.v.kobozev@gmail.com>
  */
+
+#include <string.h>
  
+#ifndef _PROTOCOL_H
+#define _PROTOCOL_H
+
 struct ip_header {
     int ihl:4;
     int version:4;
@@ -33,3 +38,5 @@ struct udp_pseudo {
     uint8_t protocol;
     uint16_t len;
 };
+
+#endif /* _PROTOCOL_H */

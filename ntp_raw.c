@@ -1,10 +1,9 @@
-/**********************************************************
- * ntp_client_raw.c - NTP client that gets time from an NTP server using raw
+/*
+ * ntp_raw.c - NTP client that gets time from an NTP server using raw
  * sockets.
  *
- * Author: Denis Kobozev
- *********************************************************/
-
+ * Author: Denis Kobozev <d.v.kobozev@gmail.com>
+ */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,167 +18,201 @@
 #include <stddef.h>
 #include <unistd.h>
 
-#include "protoheaders.h"
+#include "protocol.h"
 #include "ntp.h"
 #include "ip.h"
 #include "checksum.h"
 
 #define NTP_VERSION 3
-#define NTP_BUFSIZE 48
 #define UDP_PORT 32776
 
-void printntptime(struct ntpdata *, char);
+void print_time(struct ntpdata *);
+void send_request(const char *, const char *);
+struct ntpdata get_response(void);
+struct ip_header ip_header(const char *, const struct sockaddr_in *, size_t);
+struct udp_header udp_header(size_t);
+struct ntpdata ntp_request(void);
+
 
 int main(int argc, char *argv[])
 {
-    struct hostent *h;
-    struct sockaddr_in serveraddr, myaddr;
-    struct in_addr local_ip;
-    struct ip_header iphead;
-    struct udp_header udphead;
-    struct ntpdata ntp_message;
     struct ntpdata response;
-    int sockfd, sock_udp;
-    int ip_len, udp_len, ntp_len, total_len;
-    uint16_t ip_csum, udp_csum;
-    uint16_t *udp_csum_ptr, *ip_csum_ptr;
-    uint8_t *datagrambuf;
-    
-    /* Check the commandline arguments */
+
+    /* check the commandline arguments */
     if(argc < 3) {
         fprintf(stderr, "Usage: %s interface ntp_server_url\n", argv[0]);
         fprintf(stderr, "Example: %s eth0 pool.ntp.org\n", argv[0]);
         exit(1);
     }
+
+    send_request(argv[1], argv[2]);
+    response = get_response();
+    print_time(&response);
     
-    /* Convert hostname to IP address */
-    if((h = gethostbyname(argv[2])) == NULL) {
+    return 0;
+}
+
+/* Send an empty ntp message to an ntp server.
+ *
+ * Message is sent from network interface `interface` to server with
+ * hostname `hostname`.
+ */
+void send_request(const char *interface, const char *hostname)
+{
+    struct hostent *remote_host;
+    struct sockaddr_in remote_addr;
+    struct ip_header ip_head;
+    struct udp_header udp_head;
+    struct ntpdata message;
+    uint8_t *buffer;
+    uint16_t *udp_csum_p, *ip_csum_p;
+    size_t ip_len, udp_len, ntp_len, total_len;
+    int sockfd;
+
+    /* convert hostname to IP address */
+    if((remote_host = gethostbyname(hostname)) == NULL) {
         herror("gethostbyname");
         exit(1);
     }
+
+    remote_addr.sin_family = AF_INET;
+    remote_addr.sin_port = htons(123);
+    remote_addr.sin_addr = *((struct in_addr *) remote_host->h_addr);
+    memset(remote_addr.sin_zero, 0, sizeof(remote_addr.sin_zero));
     
-    /* Create a raw socket */
+    ip_len = sizeof(struct ip_header);
+    udp_len = sizeof(struct udp_header);
+    ntp_len = sizeof(struct ntpdata);
+    total_len = ip_len + udp_len + ntp_len;
+
+    ip_head = ip_header(interface, &remote_addr, udp_len + ntp_len);
+    udp_head = udp_header(ntp_len);
+    message = ntp_request();
+
+    buffer = (uint8_t *) malloc(total_len);
+    memcpy(buffer, &ip_head, ip_len);
+    memcpy(buffer + ip_len, &udp_head, udp_len);
+    memcpy(buffer + ip_len + udp_len, &message, ntp_len);
+
+    /* calculate and set UDP checksum */
+    udp_csum_p = (uint16_t *) (buffer + ip_len +
+            offsetof(struct udp_header, checksum));
+    *udp_csum_p = udp_checksum(&udp_head, &message, ip_head.src_addr,
+            ip_head.dest_addr, ntp_len);
+    
+    /* calculate and set IP checksum */
+    ip_csum_p = (uint16_t *) (buffer + offsetof(struct ip_header, checksum));
+    *ip_csum_p = checksum((uint16_t *) buffer, total_len);
+
+    /* send the packet */
     if((sockfd = socket(PF_INET, SOCK_RAW, IPPROTO_RAW)) == -1) {
         perror("socket");
         exit(1);
     }
     
-    /* Initialize the server address for sendto and recvfrom calls */
-    serveraddr.sin_family = AF_INET;
-    serveraddr.sin_port = htons(123);
-    serveraddr.sin_addr = *((struct in_addr *) h->h_addr);
-    memset(serveraddr.sin_zero, 0, sizeof(serveraddr.sin_zero));
+    sendto(sockfd, buffer, total_len, 0, (struct sockaddr *) &remote_addr, 
+            sizeof(struct sockaddr));
     
-    /* Create IP header.
-     *
-     * Try looking up IP header spec for field descriptions and values.
-     * - Meaningless magic number is used for id
-     * - Max TTL value is used for ttl
-     * - Checksum is set to 0 for now and computed when we have the whole IP
-     * datagram
-     */
-    ip_len = sizeof(struct ip_header);
-    udp_len = sizeof(struct udp_header);
-    ntp_len = sizeof(struct ntpdata);
-    total_len = ip_len + udp_len + ntp_len;
-    
-    /* Get this computer's IP address */
-    if (interface_ip(argv[1], &local_ip) < 0) {
+    free(buffer);
+    close(sockfd);
+}
+
+/* create ip header with source address that belongs to network interface
+ * `interface`, destination address passed in `remote` and data of size
+ * `data_len`.
+ */
+struct ip_header ip_header(const char *interface, 
+        const struct sockaddr_in *remote,
+        size_t data_len)
+{
+    struct in_addr local_ip;
+    struct ip_header header;
+    size_t len;
+
+    /* get IP address for the interface */
+    if (interface_ip(interface, &local_ip) < 0) {
         exit(1);
     }
+
+    len = sizeof(struct ip_header);
     
-    iphead.version = 4;
-    iphead.ihl = ip_len / 4;
-    iphead.tos = 0;
-    iphead.tlength = htons(total_len);
-    iphead.id = htons(0xF00);
-    iphead.flags_off = 0;
-    iphead.ttl = 0xFF;
-    iphead.protocol = IPPROTO_UDP;
-    iphead.checksum = 0;
-    iphead.src_addr = local_ip;
-    iphead.dest_addr = serveraddr.sin_addr;
-    
-    /* Create UDP header */
-    udphead.src_port = htons(UDP_PORT);
-    udphead.dest_port = htons(123);
-    udphead.length = htons(udp_len + ntp_len);
-    udphead.checksum = 0;
-    
-    /* Create NTP message */
-    memset(&ntp_message, 0, sizeof(struct ntpdata));
-    ntp_message.status |= (NTP_VERSION << 3); 
-    ntp_message.status |= MODE_CLIENT;
-    
-    /* Create the whole packet */
-    datagrambuf = (uint8_t *) malloc(total_len);
-    memcpy(datagrambuf, &iphead, ip_len);
-    memcpy(datagrambuf + ip_len, &udphead, udp_len);
-    memcpy(datagrambuf + ip_len + udp_len, &ntp_message, ntp_len);
-    
-    /* Calculate and set UDP checksum. */
-    udp_csum = udp_checksum(&udphead, &ntp_message, iphead.src_addr, \
-            iphead.dest_addr, ntp_len);
-    udp_csum_ptr = (uint16_t *) (datagrambuf + ip_len + \
-            offsetof(struct udp_header, checksum));
-    *udp_csum_ptr = udp_csum;
-    
-    /* Calculate and set IP checksum */
-    ip_csum = checksum((uint16_t *) datagrambuf, total_len);
-    ip_csum_ptr = (uint16_t *) (datagrambuf + offsetof(struct ip_header, \
-            checksum));
-    *ip_csum_ptr = ip_csum;
-    
-    /* Send the packet */
-    sendto(sockfd, datagrambuf, total_len, 0, \
-            (struct sockaddr *) &serveraddr, sizeof(struct sockaddr));
-    
-    free(datagrambuf);
-    close(sockfd);
-    
-    /* Receive NTP response */
-    if((sock_udp = socket(PF_INET, SOCK_DGRAM, 0)) == -1) {
+    header.version = 4;
+    header.ihl = len / 4;
+    header.tos = 0;
+    header.tlength = htons(len + data_len);
+    header.id = htons(0xF00); /* bogus id number */
+    header.flags_off = 0;
+    header.ttl = 0xFF; /* maximum TTL */
+    header.protocol = IPPROTO_UDP;
+    /* real checksum will be computed when we have the whole datagram */
+    header.checksum = 0;
+    header.src_addr = local_ip;
+    header.dest_addr = remote->sin_addr;
+
+    return header;
+}
+
+/* create udp header for data of size `data_len` */
+struct udp_header udp_header(size_t data_len)
+{
+    struct udp_header header;
+
+    header.src_port = htons(UDP_PORT);
+    header.dest_port = htons(123);
+    header.length = htons(sizeof(struct udp_header) + data_len);
+    header.checksum = 0;
+
+    return header;
+} 
+
+/* create empty ntp request */
+struct ntpdata ntp_request()
+{
+    struct ntpdata request;
+
+    memset(&request, 0, sizeof(struct ntpdata));
+    request.status |= (NTP_VERSION << 3); 
+    request.status |= MODE_CLIENT;
+
+    return request;
+}
+
+/* receive NTP response from remote server */
+struct ntpdata get_response()
+{
+    struct sockaddr_in local_addr;
+    struct ntpdata response;
+    int sockfd;
+    int bind_ret;
+
+    if((sockfd = socket(PF_INET, SOCK_DGRAM, 0)) == -1) {
         perror("socket");
         exit(1);
     }
     
-    myaddr.sin_family = AF_INET;
-    myaddr.sin_port = htons(UDP_PORT);
-    myaddr.sin_addr.s_addr = INADDR_ANY;
-    memset(myaddr.sin_zero, 0, sizeof(myaddr.sin_zero));
+    local_addr.sin_family = AF_INET;
+    local_addr.sin_port = htons(UDP_PORT);
+    local_addr.sin_addr.s_addr = INADDR_ANY;
+    memset(local_addr.sin_zero, 0, sizeof(local_addr.sin_zero));
     
-    if (bind(sock_udp, (struct sockaddr *)&myaddr, sizeof(myaddr)) == -1) {
+    bind_ret = bind(sockfd, (struct sockaddr *) &local_addr, 
+            sizeof(struct sockaddr));
+    if (-1 == bind_ret) {
         perror("bind");
         exit(1);
     }
 
-    recvfrom(sock_udp, &response, sizeof(struct ntpdata), 0, NULL,
-            NULL);
-    
-    /* Print time */
-    printntptime(&response, 'n');
-    
-    close(sock_udp);
-    
-    return 0;
+    recvfrom(sockfd, &response, sizeof(struct ntpdata), 0, NULL, NULL);
+
+    close(sockfd);
+    return response;
 }
 
-/* printntptime() function extracts and prints time from an NTP response
- * message referenced by the pointer argument. Character argument specifies the
- * order of bytes in the message: 'n' for network, 'h' for host.
- */
-void printntptime(struct ntpdata *ntpmessage, char order)
+/* format and print time from an ntp server response */
+void print_time(struct ntpdata *message)
 {
     time_t seconds;
 
-    if('n' == order) {
-        seconds = ntohl(ntpmessage->xmt.int_part) - JAN_1970;
-    } else if('h' == order) {
-        seconds = ntpmessage->xmt.int_part - JAN_1970;
-    } else {
-        printf("printntptime: invalid second argument");
-        return;
-    }
-    
-    printf("Time: %s\n", ctime(&seconds));
+    seconds = ntohl(message->xmt.int_part) - JAN_1970;
+    printf("%s", ctime(&seconds));
 }
